@@ -18,7 +18,7 @@ def test_endpoint():
 def llm_endpoint(request: LLMRequest):
     # Use the topic extraction logic from `model.topic`
     try:
-        topic = extract_topics_from_text(request.content)
+        topic = extract_topics_from_text(request.content, use_local=False)
         return {
             "topic": {
                 "count": topic.count,
