@@ -1,3 +1,6 @@
+# app/api/api_v1/endpoints/system.py
+# 코드 설명: 시스템 관련 API 엔드포인트를 정의합니다.
+# 상태 확인 및 데이터베이스 연결 테스트 기능을 제공합니다.
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text

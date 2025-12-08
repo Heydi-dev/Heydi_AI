@@ -1,3 +1,5 @@
+# app/main.py
+# 코드 설명: FastAPI 애플리케이션의 진입점입니다.
 from fastapi import FastAPI
 from app.core.config import settings
 from app.api.api_v1.router import api_router
