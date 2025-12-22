@@ -13,3 +13,7 @@ datasets
 pandas
 scikit-learn
 accelerate
+openai-whisper
+pyaudio
+whisper
+python-multipart
