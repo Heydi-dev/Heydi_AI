@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>PCM WS (16k up / 24k down)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        padding: 16px;
+      }
+      button {
+        margin-right: 8px;
+      }
+      #log {
+        white-space: pre-wrap;
+        background: #111;
+        color: #eee;
+        padding: 12px;
+        border-radius: 8px;
+        height: 220px;
+        overflow: auto;
+      }
+      .row {
+        margin: 10px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>PCM WebSocket Demo</h3>
+
+    <div class="row">
+      <button id="btnConnect">Connect</button>
+      <button id="btnStart" disabled>Start Mic (send 16k)</button>
+      <button id="btnStop" disabled>Stop Mic</button>
+      <button id="btnDisconnect" disabled>Disconnect</button>
+      <span id="status">disconnected</span>
+    </div>
+
+    <div class="row">
+      <div>Send: PCM Int16 mono @ 16000 Hz</div>
+      <div>Recv: PCM Int16 mono @ 24000 Hz</div>
+    </div>
+
+    <div id="log"></div>
+
+    <script>
+      (() => {
+        const WS_URL = "ws://localhost:8000/api/v1/model/ws/conversations";
+
+        // 고정 가정
+        const SEND_SR = 16000; // mic -> server
+        const RECV_SR = 24000; // server -> client
+
+        const $ = (id) => document.getElementById(id);
+        const btnConnect = $("btnConnect");
+        const btnStart = $("btnStart");
+        const btnStop = $("btnStop");
+        const btnDisconnect = $("btnDisconnect");
+        const statusEl = $("status");
+        const logEl = $("log");
+
+        let ws = null;
+
+        // mic send pipeline
+        let micStream = null;
+        let sendCtx = null;
+        let workletNode = null;
+
+        // playback pipeline (separate context 권장: recv SR 고정)
+        let playCtx = null;
+        let playTime = 0; // scheduling cursor
+
+        function log(...args) {
+          logEl.textContent += args.join(" ") + "\n";
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+        function setStatus(s) {
+          statusEl.textContent = s;
+        }
+
+        function setUiConnected(connected) {
+          btnConnect.disabled = connected;
+          btnDisconnect.disabled = !connected;
+          btnStart.disabled = !connected;
+          btnStop.disabled = true;
+        }
+        function setUiRecording(recording) {
+          btnStart.disabled = recording;
+          btnStop.disabled = !recording;
+        }
+
+        // -------------------------
+        // WS connect / receive
+        // -------------------------
+        function connectWs() {
+          ws = new WebSocket(WS_URL);
+          ws.binaryType = "arraybuffer";
+
+          ws.onopen = async () => {
+            setStatus("connected");
+            setUiConnected(true);
+            log("✅ WS connected:", WS_URL);
+
+            // playback context 준비(서버->클라 24k 가정)
+            if (!playCtx) {
+              playCtx = new (window.AudioContext || window.webkitAudioContext)({
+                sampleRate: RECV_SR,
+              });
+              playTime = playCtx.currentTime;
+              log("✅ playCtx sampleRate:", playCtx.sampleRate);
+            } else {
+              playTime = playCtx.currentTime;
+            }
+          };
+
+          ws.onmessage = (ev) => {
+            if (typeof ev.data === "string") {
+              log("📩 text:", ev.data);
+              return;
+            }
+            // 서버가 PCM Int16 mono @ 24k 를 ArrayBuffer로 준다고 가정
+            const ab = ev.data;
+            playPcmInt16Mono(ab, RECV_SR);
+          };
+
+          ws.onerror = (e) => log("❌ WS error:", e?.message || e);
+          ws.onclose = () => {
+            log("🔌 WS closed");
+            setStatus("disconnected");
+            setUiConnected(false);
+            stopMic();
+            ws = null;
+          };
+        }
+
+        function disconnectWs() {
+          if (ws) ws.close();
+        }
+
+        // -------------------------
+        // Playback: Int16 -> AudioBuffer scheduling
+        // -------------------------
+        function playPcmInt16Mono(arrayBuffer, sampleRate) {
+          if (!playCtx) {
+            playCtx = new (window.AudioContext || window.webkitAudioContext)({
+              sampleRate,
+            });
+            playTime = playCtx.currentTime;
+          }
+
+          const int16 = new Int16Array(arrayBuffer);
+          const f32 = new Float32Array(int16.length);
+          for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+
+          const buf = playCtx.createBuffer(1, f32.length, sampleRate);
+          buf.copyToChannel(f32, 0);
+
+          const src = playCtx.createBufferSource();
+          src.buffer = buf;
+          src.connect(playCtx.destination);
+
+          // 끊김 방지: "현재 시각보다 조금 앞"에 이어서 재생 예약
+          const now = playCtx.currentTime;
+          if (playTime < now + 0.05) playTime = now + 0.05;
+
+          src.start(playTime);
+          playTime += buf.duration;
+        }
+
+        // -------------------------
+        // Mic capture: Float32 -> Int16 -> WS send
+        // -------------------------
+        async function startMic() {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            log("먼저 WS 연결을 해주세요.");
+            return;
+          }
+
+          // 브라우저는 mic을 요청한 sampleRate로 "그대로" 주지 않을 수 있음.
+          // 그래서 AudioContext(SEND_SR)로 받아서 worklet에서 보내는 구조로 고정.
+          micStream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              channelCount: 1,
+              echoCancellation: false,
+              noiseSuppression: false,
+              autoGainControl: false,
+            },
+          });
+
+          sendCtx = new (window.AudioContext || window.webkitAudioContext)({
+            sampleRate: SEND_SR,
+          });
+          log("✅ sendCtx sampleRate:", sendCtx.sampleRate);
+
+          const workletCode = `
+      class Int16Sender extends AudioWorkletProcessor {
+        process(inputs) {
+          const input = inputs[0];
+          if (!input || input.length === 0) return true;
+          const ch0 = input[0];
+          if (!ch0) return true;
+
+          // Float32 [-1,1] -> Int16
+          const out = new Int16Array(ch0.length);
+          for (let i = 0; i < ch0.length; i++) {
+            let s = ch0[i];
+            if (s > 1) s = 1;
+            else if (s < -1) s = -1;
+            out[i] = (s * 32767) | 0;
+          }
+          this.port.postMessage(out.buffer, [out.buffer]);
+          return true;
+        }
+      }
+      registerProcessor('int16-sender', Int16Sender);
+    `;
+
+          const blobUrl = URL.createObjectURL(
+            new Blob([workletCode], { type: "application/javascript" })
+          );
+          await sendCtx.audioWorklet.addModule(blobUrl);
+
+          const src = sendCtx.createMediaStreamSource(micStream);
+          workletNode = new AudioWorkletNode(sendCtx, "int16-sender");
+
+          workletNode.port.onmessage = (e) => {
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            // e.data는 ArrayBuffer(Int16) — 서버는 16k mono Int16로 해석
+            ws.send(e.data);
+          };
+
+          src.connect(workletNode);
+          // destination 연결은 보통 안 함(하울링 방지)
+          // workletNode.connect(sendCtx.destination);
+
+          setUiRecording(true);
+          log("🎙️ sending PCM Int16 @ 16kHz ...");
+        }
+
+        function stopMic() {
+          setUiRecording(false);
+
+          if (workletNode) {
+            try {
+              workletNode.disconnect();
+            } catch {}
+            workletNode = null;
+          }
+
+          if (sendCtx) {
+            // 닫아도 되고 유지해도 됨. 여기선 깔끔하게 닫음.
+            sendCtx.close().catch(() => {});
+            sendCtx = null;
+          }
+
+          if (micStream) {
+            micStream.getTracks().forEach((t) => t.stop());
+            micStream = null;
+          }
+
+          log("🛑 mic stopped");
+        }
+
+        // -------------------------
+        // UI
+        // -------------------------
+        btnConnect.addEventListener("click", connectWs);
+        btnDisconnect.addEventListener("click", disconnectWs);
+        btnStart.addEventListener("click", () =>
+          startMic().catch((e) => log("❌ startMic error:", e?.message || e))
+        );
+        btnStop.addEventListener("click", stopMic);
+
+        setUiConnected(false);
+      })();
+    </script>
+  </body>
+</html>
