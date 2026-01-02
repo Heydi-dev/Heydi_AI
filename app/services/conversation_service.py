@@ -4,7 +4,6 @@ from typing import AsyncIterable
 from fastapi import WebSocket
 from google import genai
 
-
 class ConversationService:
     """
     Conversation pipeline that handles WebSocket audio streams
@@ -27,7 +26,28 @@ class ConversationService:
             except Exception as e:
                 print(f"Error receiving audio: {e}")
                 break
-
+    
+    async def receive_data(self, live_session, websocket: WebSocket):
+        """Asynchronously receive audio and text data from the WebSocket."""
+        while True:
+            try:
+                turn = live_session.receive()
+                async for response in turn:
+                    if (response.server_content):
+                        if (response.server_content.model_turn):
+                            for part in response.server_content.model_turn.parts:
+                                if part.inline_data and isinstance(part.inline_data.data, bytes):
+                                    await websocket.send_bytes(part.inline_data.data)
+                        if response.server_content.output_transcription:
+                            print("Transcription:", response.server_content.output_transcription.text)
+                            await websocket.send_json({"type": "output", "transcription": response.server_content.output_transcription.text})
+                        if response.server_content.input_transcription:
+                            print("User said:", response.server_content.input_transcription.text)
+                            await websocket.send_json({"type": "input", "transcription": response.server_content.input_transcription.text})
+            except Exception as e:
+                print(f"Error receiving audio: {e}")
+                break
+            
     async def send_audio(self, live_session, websocket: WebSocket):
         """Receive audio from the WebSocket and send it to the live session."""
         while True:
@@ -47,10 +67,12 @@ class ConversationService:
                 config={
                     "response_modalities": ["AUDIO"],
                     "system_instruction": "You are a helpful and friendly AI assistant.",
+                    "input_audio_transcription": {},
+                    "output_audio_transcription": {}
                 },
             ) as live_session:
                 async with asyncio.TaskGroup() as tg:
-                    tg.create_task(self.receive_audio(live_session, websocket))
+                    tg.create_task(self.receive_data(live_session, websocket))
                     tg.create_task(self.send_audio(live_session, websocket))
         except asyncio.CancelledError:
             pass

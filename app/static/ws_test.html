@@ -24,6 +24,29 @@
       .row {
         margin: 10px 0;
       }
+      .transcription-container {
+        margin-top: 20px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      .transcription-box {
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        padding: 12px;
+        background: #f9f9f9;
+      }
+      .transcription-box h4 {
+        margin: 0 0 8px 0;
+        color: #333;
+      }
+      .transcription-text {
+        color: #666;
+        font-size: 14px;
+        min-height: 40px;
+        word-wrap: break-word;
+        white-space: pre-wrap;
+      }
     </style>
   </head>
   <body>
@@ -40,6 +63,19 @@
     <div class="row">
       <div>Send: PCM Int16 mono @ 16000 Hz</div>
       <div>Recv: PCM Int16 mono @ 24000 Hz</div>
+    </div>
+
+    <div class="transcription-container">
+      <div class="transcription-box">
+        <h4>🎤 Input Transcription</h4>
+        <div id="inputTranscription" class="transcription-text">대기 중...</div>
+      </div>
+      <div class="transcription-box">
+        <h4>🤖 Output Transcription</h4>
+        <div id="outputTranscription" class="transcription-text">
+          대기 중...
+        </div>
+      </div>
     </div>
 
     <div id="log"></div>
@@ -59,6 +95,8 @@
         const btnDisconnect = $("btnDisconnect");
         const statusEl = $("status");
         const logEl = $("log");
+        const inputTranscriptionEl = $("inputTranscription");
+        const outputTranscriptionEl = $("outputTranscription");
 
         let ws = null;
 
@@ -116,7 +154,20 @@
 
           ws.onmessage = (ev) => {
             if (typeof ev.data === "string") {
-              log("📩 text:", ev.data);
+              try {
+                const data = JSON.parse(ev.data);
+                if (data.type === "input" && data.transcription) {
+                  inputTranscriptionEl.textContent = data.transcription;
+                  log("🎤 Input:", data.transcription);
+                } else if (data.type === "output" && data.transcription) {
+                  outputTranscriptionEl.textContent = data.transcription;
+                  log("🤖 Output:", data.transcription);
+                } else {
+                  log("📩 text:", ev.data);
+                }
+              } catch (e) {
+                log("📩 text:", ev.data);
+              }
               return;
             }
             // 서버가 PCM Int16 mono @ 24k 를 ArrayBuffer로 준다고 가정
