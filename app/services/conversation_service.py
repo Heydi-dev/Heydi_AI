@@ -39,11 +39,13 @@ class ConversationService:
                                 if part.inline_data and isinstance(part.inline_data.data, bytes):
                                     await websocket.send_bytes(part.inline_data.data)
                         if response.server_content.output_transcription:
-                            print("Transcription:", response.server_content.output_transcription.text)
-                            await websocket.send_json({"type": "output", "transcription": response.server_content.output_transcription.text})
+                            transcription = response.server_content.output_transcription
+                            print("Transcription:", transcription.text, "Finished:", transcription.finished)
+                            await websocket.send_json({"type": "output", "transcription": transcription.text, "finished": transcription.finished})
                         if response.server_content.input_transcription:
-                            print("User said:", response.server_content.input_transcription.text)
-                            await websocket.send_json({"type": "input", "transcription": response.server_content.input_transcription.text})
+                            transcription = response.server_content.input_transcription
+                            print("User said:", transcription.text, "Finished:", transcription.finished)
+                            await websocket.send_json({"type": "input", "transcription": transcription.text, "finished": transcription.finished})
             except Exception as e:
                 print(f"Error receiving audio: {e}")
                 break
