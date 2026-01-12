@@ -1,8 +1,9 @@
 import asyncio
-from typing import AsyncIterable
+from typing import Iterable
 
 from fastapi import WebSocket
 from google import genai
+from google.genai import types
 
 class ConversationService:
     """
@@ -12,6 +13,39 @@ class ConversationService:
 
     def __init__(self):
         self.client = genai.Client()
+
+    def _format_turns_for_diary(self, turns: Iterable) -> str:
+        formatted_lines = []
+        for turn in turns:
+            role = getattr(turn, "role", None)
+            if role is None and isinstance(turn, dict):
+                role = turn.get("role")
+            text = getattr(turn, "text", None)
+            if text is None and isinstance(turn, dict):
+                text = turn.get("text")
+            if not text:
+                continue
+            role_label = "사용자" if role == "user" else "AI"
+            formatted_lines.append(f"{role_label}: {text}")
+        return "\n".join(formatted_lines)
+
+    def generate_diary(self, turns: Iterable) -> str:
+        conversation = self._format_turns_for_diary(turns)
+        if not conversation:
+            return ""
+
+        response = self.client.models.generate_content(
+            model="gemini-2.5-flash",
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "당신은 사용자의 대화를 바탕으로 일기를 작성하는 도우미입니다. "
+                    "아래 대화 내용을 참고해 사용자가 직접 쓴 것 같은 자연스러운 한국어 일기를 작성하세요. "
+                    "일기 본문만 작성하고 제목이나 리스트, 말머리는 쓰지 마세요."
+                ),
+            ),
+            contents=conversation,
+        )
+        return response.text or ""
 
     async def receive_audio(self, live_session, websocket: WebSocket):
         """Receive audio from the live session and send it through the WebSocket."""

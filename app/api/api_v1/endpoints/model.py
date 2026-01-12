@@ -26,6 +26,13 @@ stt_service = WhisperSTTService()
 class LLMRequest(BaseModel):
     content: str
 
+class ConversationTurn(BaseModel):
+    role: str
+    text: str
+
+class DiaryRequest(BaseModel):
+    turns: list[ConversationTurn]
+
 @router.post("/topic")
 def topic_endpoint(request: LLMRequest):
     # Use the topic extraction logic from `model.topic`
@@ -62,6 +69,14 @@ def summary_endpoint(request: LLMRequest):
         contents=request.content
     )
     return {"summary": response.text}
+
+@router.post("/diary")
+def diary_endpoint(request: DiaryRequest):
+    try:
+        diary = conversation_service.generate_diary(request.turns)
+        return {"diary": diary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.websocket("/ws/conversations")
 async def conversations_endpoint(websocket: WebSocket):
