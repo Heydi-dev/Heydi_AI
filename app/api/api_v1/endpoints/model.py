@@ -33,6 +33,9 @@ class ConversationTurn(BaseModel):
 class DiaryRequest(BaseModel):
     turns: list[ConversationTurn]
 
+class DiarySummaryRequest(BaseModel):
+    diary: str
+
 @router.post("/topic")
 def topic_endpoint(request: LLMRequest):
     # Use the topic extraction logic from `model.topic`
@@ -60,15 +63,12 @@ def emotion_endpoint(request: LLMRequest):
     return {"response": response.text}
 
 @router.post("/summary")
-def summary_endpoint(request: LLMRequest):
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        config=types.GenerateContentConfig(
-            system_instruction="You're a summary bot. Create a one-line summary of the given content in korean.",
-        ),
-        contents=request.content
-    )
-    return {"summary": response.text}
+def diary_summary_endpoint(request: DiarySummaryRequest):
+    try:
+        summary = conversation_service.summarize_diary(request.diary)
+        return {"summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/diary")
 def diary_endpoint(request: DiaryRequest):
