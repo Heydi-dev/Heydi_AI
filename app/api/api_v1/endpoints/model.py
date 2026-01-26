@@ -16,6 +16,7 @@ from google.genai import types
 from model.topic import extract_topics_from_text
 from pydantic import BaseModel
 from app.services.conversation_service import ConversationService
+from app.services.monthly_comment_service import MonthlyCommentService
 from app.services.preferences_service import PreferencesService
 from app.services.stt_service import WhisperSTTService
 
@@ -23,6 +24,7 @@ router = APIRouter()
 client = genai.Client()
 conversation_service = ConversationService()
 preferences_service = PreferencesService()
+monthly_comment_service = MonthlyCommentService()
 stt_service = WhisperSTTService()
 
 class LLMRequest(BaseModel):
@@ -92,6 +94,32 @@ def preferences_endpoint(request: PreferencesRequest):
     try:
         entries = [entry.dict() for entry in request.entries]
         return preferences_service.extract_preferences(entries)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/monthly-activity")
+def monthly_activity_endpoint(request: PreferencesRequest):
+    try:
+        entries = [entry.dict() for entry in request.entries]
+        comment = monthly_comment_service.generate_activity_comment(entries)
+        if not comment:
+            raise HTTPException(status_code=400, detail="No valid diary entries provided.")
+        return {"activity_comment": comment}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/monthly-feedback")
+def monthly_feedback_endpoint(request: PreferencesRequest):
+    try:
+        entries = [entry.dict() for entry in request.entries]
+        comment = monthly_comment_service.generate_feedback_comment(entries)
+        if not comment:
+            raise HTTPException(status_code=400, detail="No valid diary entries provided.")
+        return {"feedback_comment": comment}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
