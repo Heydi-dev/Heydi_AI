@@ -16,11 +16,13 @@ from google.genai import types
 from model.topic import extract_topics_from_text
 from pydantic import BaseModel
 from app.services.conversation_service import ConversationService
+from app.services.preferences_service import PreferencesService
 from app.services.stt_service import WhisperSTTService
 
 router = APIRouter()
 client = genai.Client()
 conversation_service = ConversationService()
+preferences_service = PreferencesService()
 stt_service = WhisperSTTService()
 
 class LLMRequest(BaseModel):
@@ -35,6 +37,13 @@ class DiaryRequest(BaseModel):
 
 class DiarySummaryRequest(BaseModel):
     diary: str
+
+class DiaryEntry(BaseModel):
+    date: str
+    text: str
+
+class PreferencesRequest(BaseModel):
+    entries: list[DiaryEntry]
 
 @router.post("/topic")
 def topic_endpoint(request: LLMRequest):
@@ -75,6 +84,14 @@ def diary_endpoint(request: DiaryRequest):
     try:
         diary = conversation_service.generate_diary(request.turns)
         return {"diary": diary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/preferences")
+def preferences_endpoint(request: PreferencesRequest):
+    try:
+        entries = [entry.dict() for entry in request.entries]
+        return preferences_service.extract_preferences(entries)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
