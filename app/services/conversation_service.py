@@ -117,7 +117,7 @@ class ConversationService:
                 print(f"Error sending audio: {e}")
                 break
 
-    async def handle_conversation(self, websocket: WebSocket):
+    async def handle_conversation(self, websocket: WebSocket, user_id: int | None = None):
         """Handle a WebSocket conversation with audio streaming."""
         try:
             async with self.client.aio.live.connect(

@@ -17,3 +17,5 @@ openai-whisper
 pyaudio
 whisper
 python-multipart
+pytest
+pytest-asyncio

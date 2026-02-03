@@ -15,14 +15,21 @@ from google import genai
 from google.genai import types
 from model.topic import extract_topics_from_text
 from pydantic import BaseModel
+from app.core.config import settings
 from app.services.conversation_service import ConversationService
+from app.services.future_reminder_conversation_service import (
+    FutureReminderConversationService,
+)
 from app.services.monthly_comment_service import MonthlyCommentService
 from app.services.preferences_service import PreferencesService
 from app.services.stt_service import WhisperSTTService
 
 router = APIRouter()
 client = genai.Client()
-conversation_service = ConversationService()
+if settings.CONVERSATION_SERVICE_MODE == "future_reminder":
+    conversation_service = FutureReminderConversationService()
+else:
+    conversation_service = ConversationService()
 preferences_service = PreferencesService()
 monthly_comment_service = MonthlyCommentService()
 stt_service = WhisperSTTService()
@@ -126,8 +133,15 @@ def monthly_feedback_endpoint(request: PreferencesRequest):
 @router.websocket("/ws/conversations")
 async def conversations_endpoint(websocket: WebSocket):
     await websocket.accept()
+    user_id = None
+    user_id_param = websocket.query_params.get("user_id")
+    if user_id_param:
+        try:
+            user_id = int(user_id_param)
+        except ValueError:
+            user_id = None
     try:
-        await conversation_service.handle_conversation(websocket)
+        await conversation_service.handle_conversation(websocket, user_id=user_id)
     except WebSocketDisconnect:
         pass
     except Exception as e:
