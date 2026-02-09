@@ -10,6 +10,9 @@ class Settings(BaseSettings):
     MEMORY_RECENT_PREFERENCE_LIMIT: int = 3
     MEMORY_RECENT_FACT_LIMIT: int = 5
     MEMORY_DEFAULT_SEARCH_LIMIT: int = 5
+    TOOL_CALL_LOG_PATH: str | None = None
+    CONVERSATION_LOG_PATH: str | None = None
+    FUTURE_REMINDER_SEND_START_PROMPT: bool = False
 
     class Config:
         env_file = ".env"

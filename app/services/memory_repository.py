@@ -70,6 +70,16 @@ class MemoryRepository(Protocol):
     ) -> list[dict]:
         ...
 
+    async def search_memory_by_period(
+        self,
+        user_id: int,
+        start_date: str,
+        end_date: str,
+        limit: int,
+        types: Optional[Iterable[str]] = None,
+    ) -> list[dict]:
+        ...
+
     async def store_memory(
         self,
         user_id: int,
@@ -223,6 +233,46 @@ class PostgresMemoryRepository:
             )
             return [dict(row) for row in result.mappings().all()]
 
+    async def search_memory_by_period(
+        self,
+        user_id: int,
+        start_date: str,
+        end_date: str,
+        limit: int,
+        types: Optional[Iterable[str]] = None,
+    ) -> list[dict]:
+        start = self._parse_date(start_date)
+        end = self._parse_date(end_date)
+        if not start or not end:
+            return []
+        sql = (
+            """
+            SELECT memory_id, memory_type, title, content, event_date,
+                   importance, source, metadata, created_at
+            FROM user_memory
+            WHERE user_id = :user_id
+              AND deleted_at IS NULL
+              AND event_date IS NOT NULL
+              AND event_date BETWEEN :start_date AND :end_date
+            """
+        )
+        params = {
+            "user_id": user_id,
+            "start_date": start,
+            "end_date": end,
+            "limit": limit,
+        }
+        types_list = None
+        if types:
+            types_list = [t for t in (t.upper() for t in types) if t in MEMORY_TYPES]
+        if types_list:
+            types_clause = ", ".join(f"'{t}'" for t in types_list)
+            sql += f" AND memory_type IN ({types_clause})"
+        sql += " ORDER BY event_date ASC, importance DESC, created_at DESC LIMIT :limit"
+        async with self._session_factory() as session:
+            result = await session.execute(text(sql), params)
+            return [dict(row) for row in result.mappings().all()]
+
     async def store_memory(
         self,
         user_id: int,
@@ -235,7 +285,15 @@ class PostgresMemoryRepository:
         metadata: Optional[dict] = None,
     ) -> dict:
         if not content:
-            return {"error": "content_required"}
+            return {
+                "error": "content_required",
+                "expected_fields": ["memory_type", "content"],
+                "example": {
+                    "memory_type": "PREFERENCE",
+                    "content": "Prefers calm cafes and iced americano.",
+                    "title": "Cafe preference",
+                },
+            }
         normalized_type = self._normalize_memory_type(memory_type)
         normalized_source = self._normalize_source(source)
         parsed_date = self._parse_date(event_date)

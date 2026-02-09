@@ -62,6 +62,13 @@
     </div>
 
     <div class="row">
+      <label>
+        user_id:
+        <input id="userId" placeholder="e.g. 123" style="width: 120px" />
+      </label>
+    </div>
+
+    <div class="row">
       <div>Send: PCM Int16 mono @ 16000 Hz</div>
       <div>Recv: PCM Int16 mono @ 24000 Hz</div>
     </div>
@@ -83,7 +90,9 @@
 
     <script>
       (() => {
-        const WS_URL = "ws://localhost:8000/api/v1/model/ws/conversations";
+        const WS_BASE = `${
+          location.protocol === "https:" ? "wss" : "ws"
+        }://localhost:8000/api/v1/model/ws/conversations`;
 
         // 고정 가정
         const SEND_SR = 16000; // mic -> server
@@ -92,6 +101,7 @@
         const $ = (id) => document.getElementById(id);
         const btnConnect = $("btnConnect");
         const btnStart = $("btnStart");
+        const userIdEl = $("userId");
         const btnStop = $("btnStop");
         const btnDisconnect = $("btnDisconnect");
         const statusEl = $("status");
@@ -133,7 +143,11 @@
         // WS connect / receive
         // -------------------------
         function connectWs() {
-          ws = new WebSocket(WS_URL);
+          const userId = (userIdEl?.value || "").trim();
+          const wsUrl = userId
+            ? `${WS_BASE}?user_id=${encodeURIComponent(userId)}`
+            : WS_BASE;
+          ws = new WebSocket(wsUrl);
           ws.binaryType = "arraybuffer";
 
           ws.onopen = async () => {
@@ -269,7 +283,7 @@
     `;
 
           const blobUrl = URL.createObjectURL(
-            new Blob([workletCode], { type: "application/javascript" })
+            new Blob([workletCode], { type: "application/javascript" }),
           );
           await sendCtx.audioWorklet.addModule(blobUrl);
 
@@ -320,7 +334,7 @@
         btnConnect.addEventListener("click", connectWs);
         btnDisconnect.addEventListener("click", disconnectWs);
         btnStart.addEventListener("click", () =>
-          startMic().catch((e) => log("❌ startMic error:", e?.message || e))
+          startMic().catch((e) => log("❌ startMic error:", e?.message || e)),
         );
         btnStop.addEventListener("click", stopMic);
 

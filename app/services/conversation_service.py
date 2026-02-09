@@ -5,14 +5,23 @@ from fastapi import WebSocket
 from google import genai
 from google.genai import types
 
+from app.services.conversation_recorder import (
+    ConversationRecorder,
+    NoopConversationRecorder,
+)
+
+
 class ConversationService:
     """
     Conversation pipeline that handles WebSocket audio streams
     with Google's generative AI live session.
     """
 
-    def __init__(self):
+    LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+
+    def __init__(self, conversation_recorder: ConversationRecorder | None = None):
         self.client = genai.Client()
+        self._conversation_recorder = conversation_recorder or NoopConversationRecorder()
 
     def _format_turns_for_diary(self, turns: Iterable) -> str:
         formatted_lines = []
@@ -69,43 +78,77 @@ class ConversationService:
             summary = summary[:117].rstrip() + "..."
         return summary
 
-    async def receive_audio(self, live_session, websocket: WebSocket):
-        """Receive audio from the live session and send it through the WebSocket."""
+    async def receive_data(
+        self, live_session, websocket: WebSocket, user_id: int | None = None
+    ) -> None:
+        """Receive model output (audio/transcription) and forward to WebSocket."""
         while True:
             try:
-                turn = live_session.receive()
-                async for response in turn:
-                    if (response.server_content and response.server_content.model_turn):
-                        for part in response.server_content.model_turn.parts:
-                            if part.inline_data and isinstance(part.inline_data.data, bytes):
-                                await websocket.send_bytes(part.inline_data.data)
-            except Exception as e:
-                print(f"Error receiving audio: {e}")
+                async for response in live_session.receive():
+                    if response.server_content:
+                        await self._handle_server_content(
+                            response.server_content, websocket, user_id
+                        )
+            except Exception as exc:
+                print(f"Error receiving audio: {exc}")
                 break
-    
-    async def receive_data(self, live_session, websocket: WebSocket):
-        """Asynchronously receive audio and text data from the WebSocket."""
-        while True:
-            try:
-                turn = live_session.receive()
-                async for response in turn:
-                    if (response.server_content):
-                        if (response.server_content.model_turn):
-                            for part in response.server_content.model_turn.parts:
-                                if part.inline_data and isinstance(part.inline_data.data, bytes):
-                                    await websocket.send_bytes(part.inline_data.data)
-                        if response.server_content.output_transcription:
-                            transcription = response.server_content.output_transcription
-                            print("Transcription:", transcription.text, "Finished:", transcription.finished)
-                            await websocket.send_json({"type": "output", "transcription": transcription.text, "finished": transcription.finished})
-                        if response.server_content.input_transcription:
-                            transcription = response.server_content.input_transcription
-                            print("User said:", transcription.text, "Finished:", transcription.finished)
-                            await websocket.send_json({"type": "input", "transcription": transcription.text, "finished": transcription.finished})
-            except Exception as e:
-                print(f"Error receiving audio: {e}")
-                break
-            
+
+    async def _handle_server_content(
+        self, server_content, websocket: WebSocket, user_id: int | None
+    ) -> None:
+        if server_content.model_turn:
+            for part in server_content.model_turn.parts:
+                if part.inline_data and isinstance(part.inline_data.data, bytes):
+                    await websocket.send_bytes(part.inline_data.data)
+
+        if server_content.output_transcription:
+            transcription = server_content.output_transcription
+            await self._publish_transcription(
+                websocket=websocket,
+                direction="output",
+                text=transcription.text,
+                finished=transcription.finished,
+                user_id=user_id,
+            )
+
+        if server_content.input_transcription:
+            transcription = server_content.input_transcription
+            await self._publish_transcription(
+                websocket=websocket,
+                direction="input",
+                text=transcription.text,
+                finished=transcription.finished,
+                user_id=user_id,
+            )
+
+    async def _publish_transcription(
+        self,
+        *,
+        websocket: WebSocket,
+        direction: str,
+        text: str | None,
+        finished: bool | None,
+        user_id: int | None,
+    ) -> None:
+        await websocket.send_json(
+            {"type": direction, "transcription": text, "finished": finished}
+        )
+        if user_id is None or not text:
+            return
+
+        if direction == "output":
+            self._conversation_recorder.record_output(user_id, text, finished)
+            return
+
+        self._conversation_recorder.record_input(user_id, text, finished)
+        await self._on_input_transcription(user_id, text, finished)
+
+    async def _on_input_transcription(
+        self, user_id: int, text: str, finished: bool | None
+    ) -> None:
+        """Hook for subclasses that need custom behavior on user transcripts."""
+        return
+
     async def send_audio(self, live_session, websocket: WebSocket):
         """Receive audio from the WebSocket and send it to the live session."""
         while True:
@@ -117,20 +160,25 @@ class ConversationService:
                 print(f"Error sending audio: {e}")
                 break
 
-    async def handle_conversation(self, websocket: WebSocket, user_id: int | None = None):
+    async def handle_conversation(
+        self, websocket: WebSocket, user_id: int | None = None
+    ):
         """Handle a WebSocket conversation with audio streaming."""
         try:
             async with self.client.aio.live.connect(
-                model="gemini-2.5-flash-native-audio-preview-12-2025",
-                config={
-                    "response_modalities": ["AUDIO"],
-                    "system_instruction": "You are a helpful and friendly AI assistant.",
-                    "input_audio_transcription": {},
-                    "output_audio_transcription": {}
-                },
+                model=self.LIVE_MODEL,
+                config=self._build_live_config(),
             ) as live_session:
                 async with asyncio.TaskGroup() as tg:
-                    tg.create_task(self.receive_data(live_session, websocket))
+                    tg.create_task(self.receive_data(live_session, websocket, user_id))
                     tg.create_task(self.send_audio(live_session, websocket))
         except asyncio.CancelledError:
             pass
+
+    def _build_live_config(self) -> dict:
+        return {
+            "response_modalities": ["AUDIO"],
+            "system_instruction": "You are a helpful and friendly AI assistant.",
+            "input_audio_transcription": {},
+            "output_audio_transcription": {},
+        }

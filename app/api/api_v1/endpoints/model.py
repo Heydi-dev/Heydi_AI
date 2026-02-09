@@ -15,21 +15,15 @@ from google import genai
 from google.genai import types
 from model.topic import extract_topics_from_text
 from pydantic import BaseModel
-from app.core.config import settings
 from app.services.conversation_service import ConversationService
-from app.services.future_reminder_conversation_service import (
-    FutureReminderConversationService,
-)
+from app.services.conversation_service_factory import build_conversation_service
 from app.services.monthly_comment_service import MonthlyCommentService
 from app.services.preferences_service import PreferencesService
 from app.services.stt_service import WhisperSTTService
 
 router = APIRouter()
 client = genai.Client()
-if settings.CONVERSATION_SERVICE_MODE == "future_reminder":
-    conversation_service = FutureReminderConversationService()
-else:
-    conversation_service = ConversationService()
+conversation_service: ConversationService = build_conversation_service()
 preferences_service = PreferencesService()
 monthly_comment_service = MonthlyCommentService()
 stt_service = WhisperSTTService()
