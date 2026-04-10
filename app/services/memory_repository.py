@@ -102,6 +102,7 @@ class PostgresMemoryRepository:
         sql = text(
             """
             SELECT u.user_id, u.username, u.nickname,
+                   p.profile_image_url,
                    p.reminder_enabled, p.reminder_time
             FROM users u
             LEFT JOIN user_profile p ON u.user_id = p.user_id
