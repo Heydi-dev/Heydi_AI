@@ -1,3 +1,8 @@
+model/final_diary_tag_model/
+model/results/
+.vs/
+.vscode/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
