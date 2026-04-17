@@ -42,19 +42,22 @@ class ConversationService:
         conversation = self._format_turns_for_diary(turns)
         if not conversation:
             return ""
-
-        response = self.client.models.generate_content(
-            model="gemini-2.5-flash",
-            config=types.GenerateContentConfig(
-                system_instruction=(
-                    "당신은 사용자의 대화를 바탕으로 일기를 작성하는 도우미입니다. "
-                    "아래 대화 내용을 참고해 사용자가 직접 쓴 것 같은 자연스러운 한국어 일기를 작성하세요. "
-                    "일기 본문만 작성하고 제목이나 리스트, 말머리는 쓰지 마세요. "
-                    "문체는 일기체로 작성하고 감정 표현을 포함하세요."
+        try:
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash",
+                config=types.GenerateContentConfig(
+                    system_instruction=(
+                        "당신은 사용자의 대화를 바탕으로 일기를 작성하는 도우미입니다. "
+                        "아래 대화 내용을 참고해 사용자가 직접 쓴 것 같은 자연스러운 한국어 일기를 작성하세요. "
+                        "일기 본문만 작성하고 제목이나 리스트, 말머리는 쓰지 마세요. "
+                        "문체는 일기체로 작성하고 감정 표현을 포함하세요."
+                    ),
                 ),
-            ),
-            contents=conversation,
-        )
+                contents=conversation,
+            )
+        except Exception as e:
+            print(f"Error generating diary: {e}")
+            return ""
         return response.text or ""
 
     def summarize_diary(self, diary_text: str) -> str:
@@ -96,6 +99,9 @@ class ConversationService:
     async def _handle_server_content(
         self, server_content, websocket: WebSocket, user_id: int | None
     ) -> None:
+        if getattr(server_content, "interrupted", False):
+            await self._publish_interrupt(websocket)
+
         if server_content.model_turn:
             for part in server_content.model_turn.parts:
                 if part.inline_data and isinstance(part.inline_data.data, bytes):
@@ -142,6 +148,9 @@ class ConversationService:
 
         self._conversation_recorder.record_input(user_id, text, finished)
         await self._on_input_transcription(user_id, text, finished)
+
+    async def _publish_interrupt(self, websocket: WebSocket) -> None:
+        await websocket.send_json({"type": "interrupt"})
 
     async def _on_input_transcription(
         self, user_id: int, text: str, finished: bool | None

@@ -119,6 +119,7 @@
         // playback pipeline (separate context 권장: recv SR 고정)
         let playCtx = null;
         let playTime = 0; // scheduling cursor
+        const scheduledSources = new Set();
 
         function log(...args) {
           logEl.textContent += args.join(" ") + "\n";
@@ -153,7 +154,7 @@
           ws.onopen = async () => {
             setStatus("connected");
             setUiConnected(true);
-            log("✅ WS connected:", WS_URL);
+            log("✅ WS connected:", wsUrl);
 
             // playback context 준비(서버->클라 24k 가정)
             if (!playCtx) {
@@ -171,7 +172,10 @@
             if (typeof ev.data === "string") {
               try {
                 const data = JSON.parse(ev.data);
-                if (data.type === "input" && data.transcription) {
+                if (data.type === "interrupt") {
+                  clearPlaybackQueue();
+                  log("⛔ Gemini output interrupted by user speech");
+                } else if (data.type === "input" && data.transcription) {
                   inputTranscriptionEl.textContent = data.transcription;
                   log("🎤 Input:", data.transcription);
                 } else if (data.type === "output" && data.transcription) {
@@ -225,6 +229,8 @@
           const src = playCtx.createBufferSource();
           src.buffer = buf;
           src.connect(playCtx.destination);
+          scheduledSources.add(src);
+          src.onended = () => scheduledSources.delete(src);
 
           // 끊김 방지: "현재 시각보다 조금 앞"에 이어서 재생 예약
           const now = playCtx.currentTime;
@@ -232,6 +238,18 @@
 
           src.start(playTime);
           playTime += buf.duration;
+        }
+
+        function clearPlaybackQueue() {
+          if (!playCtx) return;
+
+          for (const src of scheduledSources) {
+            try {
+              src.stop();
+            } catch {}
+          }
+          scheduledSources.clear();
+          playTime = playCtx.currentTime;
         }
 
         // -------------------------
