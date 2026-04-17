@@ -19,3 +19,4 @@ whisper
 python-multipart
 pytest
 pytest-asyncio
+numpy<2.0
