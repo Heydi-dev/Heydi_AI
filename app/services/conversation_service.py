@@ -113,7 +113,6 @@ class ConversationService:
                 websocket=websocket,
                 direction="output",
                 text=transcription.text,
-                finished=transcription.finished,
                 user_id=user_id,
             )
 
@@ -123,9 +122,11 @@ class ConversationService:
                 websocket=websocket,
                 direction="input",
                 text=transcription.text,
-                finished=transcription.finished,
                 user_id=user_id,
             )
+
+        if getattr(server_content, "turn_complete", False):
+            await self._publish_turn_complete(websocket)
 
     async def _publish_transcription(
         self,
@@ -133,28 +134,26 @@ class ConversationService:
         websocket: WebSocket,
         direction: str,
         text: str | None,
-        finished: bool | None,
         user_id: int | None,
     ) -> None:
-        await websocket.send_json(
-            {"type": direction, "transcription": text, "finished": finished}
-        )
+        await websocket.send_json({"type": direction, "transcription": text})
         if user_id is None or not text:
             return
 
         if direction == "output":
-            self._conversation_recorder.record_output(user_id, text, finished)
+            self._conversation_recorder.record_output(user_id, text)
             return
 
-        self._conversation_recorder.record_input(user_id, text, finished)
-        await self._on_input_transcription(user_id, text, finished)
+        self._conversation_recorder.record_input(user_id, text)
+        await self._on_input_transcription(user_id, text)
 
     async def _publish_interrupt(self, websocket: WebSocket) -> None:
         await websocket.send_json({"type": "interrupt"})
 
-    async def _on_input_transcription(
-        self, user_id: int, text: str, finished: bool | None
-    ) -> None:
+    async def _publish_turn_complete(self, websocket: WebSocket) -> None:
+        await websocket.send_json({"type": "turn_complete"})
+
+    async def _on_input_transcription(self, user_id: int, text: str) -> None:
         """Hook for subclasses that need custom behavior on user transcripts."""
         return
 

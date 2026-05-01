@@ -101,15 +101,13 @@ class FutureReminderConversationService(ConversationService):
                 print(f"Error receiving audio: {exc}")
                 break
 
-    async def _on_input_transcription(
-        self, user_id: int, text: str, finished: bool | None
-    ) -> None:
+    async def _on_input_transcription(self, user_id: int, text: str) -> None:
         if not self._is_memory_intent(text):
             return
         self._record_debug_event(
             user_id=user_id,
             name="memory_intent_detected",
-            args={"text": text, "finished": finished},
+            args={"text": text},
             output={"note": "user requested memory-like behavior"},
         )
 
