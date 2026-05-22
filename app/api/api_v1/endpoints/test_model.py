@@ -64,7 +64,7 @@ def llm_endpoint(request: LLMRequest):
 @router.post("/emotion")
 def emotion_endpoint(request: LLMRequest):
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.1-flash-lite",
         config=types.GenerateContentConfig(
             system_instruction="You're an emotion analysis bot. Analyze the emotion of the given content and respond with one word representing the emotion (happy, joy, neutral, sad, annoyed, angry).",
         ),

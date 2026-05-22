@@ -584,7 +584,7 @@ class PreferencesService:
         }
 
         response = self._client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "You are a strict extraction engine. Use only the provided chunks. "
