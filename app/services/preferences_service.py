@@ -14,7 +14,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 # - score sentence emotion with KoELECTRA
 # - anchor strong sentiment and build context chunks
 # - sample evenly by date/week, de-duplicate similar chunks
-# - constrain LLM to literal keywords with multi-date evidence
+# - constrain LLM to literal keywords with preference for multi-date evidence
 EMOTION_MODEL_NAME = "LimYeri/HowRU-KoELECTRA-Emotion-Classifier"
 
 POS_LABEL_HINTS = [
@@ -143,6 +143,10 @@ class PreferenceItem(BaseModel):
 class PreferencesResponse(BaseModel):
     like: PreferenceItem
     dislike: PreferenceItem
+
+
+def _empty_preference() -> dict:
+    return {"keyword": "없음", "evidence": []}
 
 
 class EmotionScorer:
@@ -312,7 +316,7 @@ class PreferencesService:
             record for records in sentences_by_date.values() for record in records
         ]
         if not all_sentences:
-            return {"error": "No valid sentences found."}
+            return self._empty_preferences_response()
 
         scores = self._emotion_scorer.score([s.text for s in all_sentences])
         for record, score in zip(all_sentences, scores):
@@ -328,7 +332,7 @@ class PreferencesService:
             max_per_week=max_anchors_per_week,
         )
         if not anchors:
-            return {"error": "No emotion anchors found after filtering."}
+            return self._empty_preferences_response()
 
         # Build context chunks around anchors.
         chunks = self._build_chunks(
@@ -337,7 +341,7 @@ class PreferencesService:
             max_chunk_chars=max_chunk_chars,
         )
         if not chunks:
-            return {"error": "No context chunks generated."}
+            return self._empty_preferences_response()
 
         pos_chunks = [chunk for chunk in chunks if chunk.emotion == "pos"]
         neg_chunks = [chunk for chunk in chunks if chunk.emotion == "neg"]
@@ -362,24 +366,37 @@ class PreferencesService:
             similarity_threshold=similarity_threshold,
         )
 
-        if not pos_samples or not neg_samples:
-            return {
-                "error": "Insufficient positive/negative chunks for extraction.",
-                "positive_chunks": len(pos_samples),
-                "negative_chunks": len(neg_samples),
-            }
+        if not pos_samples and not neg_samples:
+            return self._empty_preferences_response()
 
         # Constrained extraction based on provided chunks.
         response = self._call_llm(pos_samples, neg_samples)
         if "error" in response:
             return response
+        response = self._fill_missing_preferences(response, pos_samples, neg_samples)
 
-        # Final validation: literal keyword, evidence quotes, 2+ dates.
+        # Final validation: literal keyword and evidence quotes.
         validation = self._validate_output(response, pos_samples, neg_samples)
         if validation:
             return {"error": "Validation failed.", "details": validation}
 
         return response
+
+    def _empty_preferences_response(self) -> dict:
+        return {"like": _empty_preference(), "dislike": _empty_preference()}
+
+    def _fill_missing_preferences(
+        self,
+        response: dict,
+        pos_chunks: list[Chunk],
+        neg_chunks: list[Chunk],
+    ) -> dict:
+        normalized = dict(response)
+        if not pos_chunks:
+            normalized["like"] = _empty_preference()
+        if not neg_chunks:
+            normalized["dislike"] = _empty_preference()
+        return normalized
 
     def _split_sentences(self, text: str) -> list[str]:
         cleaned = text.replace("\r", "\n").strip()
@@ -558,6 +575,7 @@ class PreferencesService:
                     {
                         "id": f"{prefix}{idx}",
                         "date": chunk.date,
+                        "confidence": round(chunk.confidence, 4),
                         "text": chunk.text,
                     }
                 )
@@ -569,7 +587,17 @@ class PreferencesService:
             "rules": {
                 "keyword_literal": "Keywords must appear exactly in chunk text.",
                 "no_emotion_words": sorted(BANNED_KEYWORDS),
-                "min_evidence_dates": 2,
+                "preferred_evidence_dates": 2,
+                "min_evidence_dates": 1,
+                "single_date_fallback": (
+                    "Prefer a keyword supported by chunks from at least two different "
+                    "dates. If none is available, choose the best literal keyword from "
+                    "the highest-confidence relevant chunk and provide one evidence item."
+                ),
+                "empty_chunk_list": (
+                    "If a positive or negative chunk list is empty, return keyword "
+                    "'없음' and an empty evidence list for that field."
+                ),
                 "format": {
                     "like": {
                         "keyword": "string",
@@ -584,14 +612,18 @@ class PreferencesService:
         }
 
         response = self._client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "You are a strict extraction engine. Use only the provided chunks. "
                     "Select exactly one liked keyword from positive chunks and one disliked "
                     "keyword from negative chunks. The keyword must be a literal substring in "
-                    "at least two chunks with different dates. Do not output emotion/state words "
-                    "listed in no_emotion_words. Output valid JSON only."
+                    "the provided chunks. Prefer keywords supported by chunks from at least "
+                    "two different dates. If no such keyword is available, select the best "
+                    "literal keyword from the highest-confidence relevant chunk and provide "
+                    "one evidence item. Do not output emotion/state words listed in "
+                    "no_emotion_words. If a chunk list is empty, output keyword '없음' with "
+                    "an empty evidence list for that field. Output valid JSON only."
                 ),
                 temperature=0.2,
                 #max_output_tokens=2048,
@@ -628,7 +660,7 @@ class PreferencesService:
         pos_chunks: list[Chunk],
         neg_chunks: list[Chunk],
     ) -> list[str]:
-        # Enforce literal keywords and multi-date evidence.
+        # Enforce literal keywords and at least one valid evidence item.
         errors = []
         like = response.get("like")
         dislike = response.get("dislike")
@@ -639,6 +671,8 @@ class PreferencesService:
             payload = response.get(key, {})
             keyword = (payload.get("keyword") or "").strip()
             evidence = payload.get("evidence") or []
+            if not chunks and keyword == "없음" and not evidence:
+                continue
             if not keyword:
                 errors.append(f"{key}: keyword missing.")
                 continue
@@ -647,8 +681,8 @@ class PreferencesService:
             matched_dates = {
                 chunk.date for chunk in chunks if keyword in chunk.text
             }
-            if len(matched_dates) < 2:
-                errors.append(f"{key}: keyword does not appear on 2 dates.")
+            if not matched_dates:
+                errors.append(f"{key}: keyword not found in provided chunks.")
             evidence_dates = set()
             for item in evidence:
                 date = (item.get("date") or "").strip()
@@ -663,8 +697,8 @@ class PreferencesService:
                 ):
                     errors.append(f"{key}: evidence quote not found in chunks.")
                 evidence_dates.add(date)
-            if len(evidence_dates) < 2:
-                errors.append(f"{key}: evidence dates fewer than 2.")
+            if not evidence_dates:
+                errors.append(f"{key}: evidence missing.")
         return errors
 
     def _tokenize(self, text: str) -> set[str]:

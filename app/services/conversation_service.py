@@ -44,7 +44,7 @@ class ConversationService:
             return ""
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3.1-flash-lite",
                 config=types.GenerateContentConfig(
                     system_instruction=(
                         "당신은 사용자의 대화를 바탕으로 일기를 작성하는 도우미입니다. "
@@ -65,7 +65,7 @@ class ConversationService:
             return ""
 
         response = self.client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             config=types.GenerateContentConfig(
                 system_instruction=(
                     "당신은 일기 내용을 한 줄로 요약하는 도우미입니다. "

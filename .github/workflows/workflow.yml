@@ -65,4 +65,3 @@ jobs:
           docker create -p 8000:8000 --name ${{ env.NAME }} --env-file ${{ env.ENV_FILE }} ${{ env.DOCKER_IMAGE }}:latest
           docker cp ${{ env.DOTENV_FILE }} ${{ env.NAME }}:/code/.env
           docker start ${{ env.NAME }}
-          
