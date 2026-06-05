@@ -8,7 +8,9 @@ env:
   DOCKER_IMAGE: ghcr.io/anbj1004/heydi-ai
   VERSION: ${{ github.sha }}
   NAME: heydi-ai-container
-
+  ENV_FILE: /home/ubuntu/fastAPI_env/.docker_env
+  DOTENV_FILE: /home/ubuntu/fastAPI_env/.env
+  
 jobs:
   build:
     name: Build
@@ -60,7 +62,6 @@ jobs:
       - name: Docker run
         run: |
           docker stop ${{ env.NAME }} && docker rm ${{ env.NAME }} && docker rmi ${{ env.DOCKER_IMAGE }}:latest
-          docker create -p 8000:8000 --name ${{ env.NAME }} ${{ env.DOCKER_IMAGE }}:latest
-          docker cp ~/fastAPI_env/.env ${{ env.NAME }}:/code/.env
+          docker create -p 8000:8000 --name ${{ env.NAME }} --env-file ${{ env.ENV_FILE }} ${{ env.DOCKER_IMAGE }}:latest
+          docker cp ${{ env.DOTENV_FILE }} ${{ env.NAME }}:/code/.env
           docker start ${{ env.NAME }}
-          
