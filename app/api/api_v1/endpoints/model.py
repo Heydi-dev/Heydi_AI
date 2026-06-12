@@ -14,12 +14,14 @@ from model.topic import extract_topics_from_text
 from pydantic import BaseModel
 from app.services.conversation_service import ConversationService
 from app.services.conversation_service_factory import build_conversation_service
+from app.services.diary_service import DiaryService
 from app.services.monthly_comment_service import MonthlyCommentService
 from app.services.preferences_service import PreferencesService
 
 router = APIRouter()
 client = genai.Client()
 conversation_service: ConversationService = build_conversation_service()
+diary_service = DiaryService()
 preferences_service = PreferencesService()
 monthly_comment_service = MonthlyCommentService()
 
@@ -101,7 +103,7 @@ def emotion_endpoint(request: LLMRequest):
 @router.post("/summary")
 def diary_summary_endpoint(request: DiarySummaryRequest):
     try:
-        summary = conversation_service.summarize_diary(request.diary)
+        summary = diary_service.summarize_diary(request.diary)
         return {"summary": summary}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -109,7 +111,7 @@ def diary_summary_endpoint(request: DiarySummaryRequest):
 @router.post("/diary")
 def diary_endpoint(request: DiaryRequest):
     try:
-        diary = conversation_service.generate_diary(request.turns)
+        diary = diary_service.generate_diary(request.turns)
         return {"diary": diary}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -1,9 +1,7 @@
 import asyncio
-from typing import Iterable
 
 from fastapi import WebSocket
 from google import genai
-from google.genai import types
 
 from app.services.conversation_recorder import (
     ConversationRecorder,
@@ -23,86 +21,22 @@ class ConversationService:
         self.client = genai.Client()
         self._conversation_recorder = conversation_recorder or NoopConversationRecorder()
 
-    def _format_turns_for_diary(self, turns: Iterable) -> str:
-        formatted_lines = []
-        for turn in turns:
-            role = getattr(turn, "role", None)
-            if role is None and isinstance(turn, dict):
-                role = turn.get("role")
-            text = getattr(turn, "text", None)
-            if text is None and isinstance(turn, dict):
-                text = turn.get("text")
-            if not text:
-                continue
-            role_label = "사용자" if role == "user" else "AI"
-            formatted_lines.append(f"{role_label}: {text}")
-        return "\n".join(formatted_lines)
-
-    def generate_diary(self, turns: Iterable) -> str:
-        """
-        Generate a diary based on the conversation content.
-        """
-        conversation = self._format_turns_for_diary(turns)
-        if not conversation:
-            return ""
-        try:
-            response = self.client.models.generate_content(
-                model="gemini-3.1-flash-lite",
-                config=types.GenerateContentConfig(
-                    system_instruction=(
-                        "당신은 사용자의 대화를 바탕으로 일기를 작성하는 도우미입니다. "
-                        "아래 대화 내용을 참고해 사용자가 직접 쓴 것 같은 자연스러운 한국어 일기를 작성하세요. "
-                        "일기 본문만 작성하고 제목이나 리스트, 말머리는 쓰지 마세요. "
-                        "문체는 일기체로 작성하고 감정 표현을 포함하세요."
-                    ),
-                ),
-                contents=conversation,
-            )
-        except Exception as e:
-            print(f"Error generating diary: {e}")
-            return ""
-        return response.text or ""
-
-    def summarize_diary(self, diary_text: str) -> str:
-        """
-        Generate a one-line summary using the diary text
-        """
-        if not diary_text:
-            return ""
-
-        response = self.client.models.generate_content(
-            model="gemini-3.1-flash-lite",
-            config=types.GenerateContentConfig(
-                system_instruction=(
-                    "당신은 일기 내용을 한 줄로 요약하는 도우미입니다. "
-                    "아래 일기에서 핵심만 뽑아 한국어 한 문장으로 요약하세요. "
-                    "줄바꿈, 따옴표, 말머리 없이 한 줄로만 작성하세요."
-                ),
-            ),
-            contents=diary_text,
-        )
-
-        summary = (response.text or "").replace("\r", " ").replace("\n", " ").strip()
-        if len(summary) > 120:
-            summary = summary[:117].rstrip() + "..."
-        return summary
-
     async def handle_conversation(
         self, websocket: WebSocket, user_id: int | None = None
     ):
-        """Connect to Gemini Live API and assign handlers for receiving and sending data."""
+        """Connect to Gemini Live API and assign receive/send handlers."""
         try:
-            async with self.client.aio.live.connect( # Connect to Gemini Live API
+            async with self.client.aio.live.connect(
                 model=self.LIVE_MODEL,
                 config=self._build_live_config(),
             ) as live_session:
-                await self._run_live_session_tasks( # run async tasks
+                await self._run_live_session_tasks(
                     self.receive_data(live_session, websocket, user_id),
                     self.send_audio(live_session, websocket),
                 )
         except asyncio.CancelledError:
             pass
-        
+
     async def send_audio(self, live_session, websocket: WebSocket):
         """
         Send audio data from the client to Gemini Live API (uplink direction).
@@ -116,11 +50,11 @@ class ConversationService:
             except Exception as e:
                 print(f"Error sending audio: {e}")
                 break
-            
+
     async def receive_data(
         self, live_session, websocket: WebSocket, user_id: int | None = None
     ) -> None:
-        """Receive model output (audio/transcription) and handle it accordingly."""
+        """Receive model output and forward supported events to the WebSocket."""
         while True:
             try:
                 async for response in live_session.receive():
@@ -135,7 +69,7 @@ class ConversationService:
     async def _handle_live_session_content(
         self, server_content, websocket: WebSocket, user_id: int | None
     ) -> None:
-        """Handle live session content, then send it to the client via WebSocket."""
+        """Handle live session content, then send it to the client."""
         if getattr(server_content, "interrupted", False):
             await self._publish_interrupt(websocket)
 
