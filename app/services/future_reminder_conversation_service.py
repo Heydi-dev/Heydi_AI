@@ -7,6 +7,7 @@ from fastapi import WebSocket
 from google.genai import types
 
 from app.services.conversation_service import ConversationService
+from app.services.live_session_state import LiveSessionState
 from app.services.memory_tool_executor import MemoryToolExecutor
 from app.services.memory_tool_schema import build_memory_tools
 from app.services.user_context_builder import UserContext, UserContextBuilder
@@ -33,12 +34,6 @@ class FutureReminderConversationService(ConversationService):
         super().__init__(conversation_recorder=conversation_recorder)
         self._memory_repo = memory_repo or PostgresMemoryRepository()
         self._tool_call_recorder = tool_call_recorder or NoopToolCallRecorder()
-        self._tool_call_in_progress = False
-        self._session_closed = False
-        self._can_send_audio = asyncio.Event()
-        self._can_send_audio.set()
-        # Live session send operations must be serialized to avoid protocol violations.
-        self._live_send_lock = asyncio.Lock()
 
     async def handle_conversation(
         self, websocket: WebSocket, user_id: Optional[int] = None
@@ -50,7 +45,7 @@ class FutureReminderConversationService(ConversationService):
         if not user_id:
             await super().handle_conversation(websocket, user_id=None)
             return
-        self._reset_live_session_state()
+        state = LiveSessionState()
         context = await self._build_user_context(user_id)
         config = {
             "response_modalities": ["AUDIO"],
@@ -65,39 +60,37 @@ class FutureReminderConversationService(ConversationService):
                 model="gemini-2.5-flash-native-audio-preview-12-2025",
                 config=config,
             ) as live_session:
-                await self._send_start_prompt(live_session, context)
+                await self._send_start_prompt(live_session, context, state)
                 await self._run_live_session_tasks(
-                    self.receive_data(live_session, websocket, user_id),
-                    self.send_audio(live_session, websocket),
+                    self.receive_data(live_session, websocket, user_id, state),
+                    self.send_audio(live_session, websocket, state),
                 )
         except asyncio.CancelledError:
             pass
 
-    def _reset_live_session_state(self) -> None:
-        self._tool_call_in_progress = False
-        self._session_closed = False
-        self._can_send_audio.set()
-
-    def _mark_session_closed(self) -> None:
-        self._session_closed = True
-        self._can_send_audio.set()
-
-    async def receive_data(self, live_session, websocket: WebSocket, user_id: int):
+    async def receive_data(
+        self,
+        live_session,
+        websocket: WebSocket,
+        user_id: int,
+        state: LiveSessionState | None = None,
+    ):
         """Receive audio, text, and tool calls from the live session."""
+        state = state or LiveSessionState()
         while True:
             try:
                 turn = live_session.receive()
                 async for response in turn:
                     if response.tool_call:
                         await self._handle_tool_call(
-                            response.tool_call, live_session, user_id
+                            response.tool_call, live_session, user_id, state
                         )
                     if response.server_content:
                         await self._handle_live_session_content(
                             response.server_content, websocket, user_id
                         )
             except Exception as exc:  # pragma: no cover - realtime safety
-                self._mark_session_closed()
+                state.mark_closed()
                 print(f"Error receiving audio: {exc}")
                 break
 
@@ -111,12 +104,19 @@ class FutureReminderConversationService(ConversationService):
             output={"note": "user requested memory-like behavior"},
         )
 
-    async def _handle_tool_call(self, tool_call, live_session, user_id: int) -> None:
+    async def _handle_tool_call(
+        self,
+        tool_call,
+        live_session,
+        user_id: int,
+        state: LiveSessionState | None = None,
+    ) -> None:
         function_calls = tool_call.function_calls or []
         if not function_calls:
             return
+        state = state or LiveSessionState()
         responses = []
-        await self._pause_audio_for_tool_call()
+        await self._pause_audio_for_tool_call(state)
         try:
             for call in function_calls:
                 name = call.name or ""
@@ -159,7 +159,7 @@ class FutureReminderConversationService(ConversationService):
                     )
                 )
             if responses:
-                async with self._live_send_lock:
+                async with state.send_lock:
                     await live_session.send_tool_response(function_responses=responses)
                 self._record_debug_event(
                     user_id=user_id,
@@ -168,17 +168,13 @@ class FutureReminderConversationService(ConversationService):
                     output={"status": "ok"},
                 )
         finally:
-            self._resume_audio_after_tool_call()
+            self._resume_audio_after_tool_call(state)
 
-    async def _pause_audio_for_tool_call(self) -> None:
-        async with self._live_send_lock:
-            self._tool_call_in_progress = True
-            self._can_send_audio.clear()
+    async def _pause_audio_for_tool_call(self, state: LiveSessionState) -> None:
+        await state.pause_audio_for_tool_call()
 
-    def _resume_audio_after_tool_call(self) -> None:
-        self._tool_call_in_progress = False
-        if not self._session_closed:
-            self._can_send_audio.set()
+    def _resume_audio_after_tool_call(self, state: LiveSessionState) -> None:
+        state.resume_audio_after_tool_call()
 
     async def _execute_tool_call(
         self, name: str, args: dict[str, Any], user_id: int
@@ -191,12 +187,18 @@ class FutureReminderConversationService(ConversationService):
     def _build_system_instruction(self, context: UserContext) -> str:
         return UserContextBuilder(self._memory_repo).build_system_instruction(context)
 
-    async def _send_start_prompt(self, live_session, context: UserContext) -> None:
+    async def _send_start_prompt(
+        self,
+        live_session,
+        context: UserContext,
+        state: LiveSessionState | None = None,
+    ) -> None:
+        state = state or LiveSessionState()
         prompt = (
             "Start the conversation now. If there is a recent special event, mention it first. "
             "Then ask if the user wants to talk about it or something else."
         )
-        async with self._live_send_lock:
+        async with state.send_lock:
             await live_session.send_realtime_input(text=prompt)
 
     def _build_tools(self) -> list[types.Tool]:
@@ -238,26 +240,32 @@ class FutureReminderConversationService(ConversationService):
             output=self._to_jsonable(output),
         )
 
-    async def send_audio(self, live_session, websocket: WebSocket):
+    async def send_audio(
+        self,
+        live_session,
+        websocket: WebSocket,
+        state: LiveSessionState | None = None,
+    ):
         """
         Send audio data from the client to Gemini Live API (uplink direction).
         This runs in a loop until the connection is closed.
         Wait if a tool call is in progress to avoid protocol violations,
         since Gemini expects tool calls to be atomic with no interleaving input.
         """
-        while not self._session_closed:
+        state = state or LiveSessionState()
+        while not state.session_closed:
             try:
-                await self._can_send_audio.wait()
+                await state.can_send_audio.wait()
                 chunk = await websocket.receive_bytes()
                 msg = {"data": chunk, "mime_type": "audio/pcm;rate=16000"}
-                async with self._live_send_lock:
-                    if self._session_closed:
+                async with state.send_lock:
+                    if state.session_closed:
                         break
-                    if not self._can_send_audio.is_set():
+                    if not state.can_send_audio.is_set():
                         continue
                     await live_session.send_realtime_input(audio=msg)
             except Exception as e:
-                self._mark_session_closed()
+                state.mark_closed()
                 print(f"Error sending audio: {e}")
                 break
 

@@ -12,6 +12,7 @@ from app.services.future_reminder_conversation_service import (  # noqa: E402
     FutureReminderConversationService,
     UserContext,
 )
+from app.services.live_session_state import LiveSessionState  # noqa: E402
 
 
 class DummyLiveSession:
@@ -88,6 +89,17 @@ def test_build_tools_contains_expected_functions():
 
 
 @pytest.mark.asyncio
+async def test_live_session_state_is_per_connection():
+    first = LiveSessionState()
+    second = LiveSessionState()
+
+    await first.pause_audio_for_tool_call()
+
+    assert not first.can_send_audio.is_set()
+    assert second.can_send_audio.is_set()
+
+
+@pytest.mark.asyncio
 async def test_execute_tool_call_fetches_special_events():
     service = FutureReminderConversationService()
     service._memory_repo = SimpleNamespace(
@@ -148,10 +160,11 @@ async def test_handle_tool_call_sends_function_response():
 async def test_handle_tool_call_pauses_audio_until_tool_response():
     service = FutureReminderConversationService()
     session = DummyLiveSession()
+    state = LiveSessionState()
     observed_gate_states = []
 
     async def execute_tool_call(name, args, user_id):
-        observed_gate_states.append(service._can_send_audio.is_set())
+        observed_gate_states.append(state.can_send_audio.is_set())
         return {"events": []}
 
     service._execute_tool_call = execute_tool_call
@@ -165,8 +178,8 @@ async def test_handle_tool_call_pauses_audio_until_tool_response():
         ]
     )
 
-    await service._handle_tool_call(tool_call, session, user_id=1)
+    await service._handle_tool_call(tool_call, session, user_id=1, state=state)
 
     assert observed_gate_states == [False]
-    assert service._can_send_audio.is_set()
+    assert state.can_send_audio.is_set()
     assert session.tool_responses, "Expected tool responses to be sent."
