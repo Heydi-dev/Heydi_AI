@@ -21,6 +21,7 @@ from app.services.tool_call_recorder import NoopToolCallRecorder, ToolCallRecord
 
 @dataclass
 class UserContext:
+    """ Used for building system instructions with relevant user information and recent memory snippets. """
     user_id: int
     nickname: Optional[str]
     recent_special_events: list[dict]
@@ -45,6 +46,9 @@ class FutureReminderConversationService(ConversationService):
         self._memory_repo = memory_repo or PostgresMemoryRepository()
         self._tool_call_recorder = tool_call_recorder or NoopToolCallRecorder()
         self._tool_call_in_progress = False
+        self._session_closed = False
+        self._can_send_audio = asyncio.Event()
+        self._can_send_audio.set()
         # Live session send operations must be serialized to avoid protocol violations.
         self._live_send_lock = asyncio.Lock()
         self._tool_handlers = {
@@ -59,9 +63,14 @@ class FutureReminderConversationService(ConversationService):
     async def handle_conversation(
         self, websocket: WebSocket, user_id: Optional[int] = None
     ) -> None:
+        """
+        Connect to Gemini Live API and assign handlers for receiving and sending data.
+        Set up tool calls for memory retrieval and storage, and include user context in system instructions.
+        """
         if not user_id:
             await super().handle_conversation(websocket, user_id=None)
             return
+        self._reset_live_session_state()
         context = await self._build_user_context(user_id)
         config = {
             "response_modalities": ["AUDIO"],
@@ -77,11 +86,21 @@ class FutureReminderConversationService(ConversationService):
                 config=config,
             ) as live_session:
                 await self._send_start_prompt(live_session, context)
-                async with asyncio.TaskGroup() as tg:
-                    tg.create_task(self.receive_data(live_session, websocket, user_id))
-                    tg.create_task(self.send_audio(live_session, websocket))
+                await self._run_live_session_tasks(
+                    self.receive_data(live_session, websocket, user_id),
+                    self.send_audio(live_session, websocket),
+                )
         except asyncio.CancelledError:
             pass
+
+    def _reset_live_session_state(self) -> None:
+        self._tool_call_in_progress = False
+        self._session_closed = False
+        self._can_send_audio.set()
+
+    def _mark_session_closed(self) -> None:
+        self._session_closed = True
+        self._can_send_audio.set()
 
     async def receive_data(self, live_session, websocket: WebSocket, user_id: int):
         """Receive audio, text, and tool calls from the live session."""
@@ -94,10 +113,11 @@ class FutureReminderConversationService(ConversationService):
                             response.tool_call, live_session, user_id
                         )
                     if response.server_content:
-                        await self._handle_server_content(
+                        await self._handle_live_session_content(
                             response.server_content, websocket, user_id
                         )
             except Exception as exc:  # pragma: no cover - realtime safety
+                self._mark_session_closed()
                 print(f"Error receiving audio: {exc}")
                 break
 
@@ -116,7 +136,7 @@ class FutureReminderConversationService(ConversationService):
         if not function_calls:
             return
         responses = []
-        self._tool_call_in_progress = True
+        await self._pause_audio_for_tool_call()
         try:
             for call in function_calls:
                 name = call.name or ""
@@ -168,7 +188,17 @@ class FutureReminderConversationService(ConversationService):
                     output={"status": "ok"},
                 )
         finally:
-            self._tool_call_in_progress = False
+            self._resume_audio_after_tool_call()
+
+    async def _pause_audio_for_tool_call(self) -> None:
+        async with self._live_send_lock:
+            self._tool_call_in_progress = True
+            self._can_send_audio.clear()
+
+    def _resume_audio_after_tool_call(self) -> None:
+        self._tool_call_in_progress = False
+        if not self._session_closed:
+            self._can_send_audio.set()
 
     async def _execute_tool_call(
         self, name: str, args: dict[str, Any], user_id: int
@@ -668,17 +698,25 @@ class FutureReminderConversationService(ConversationService):
         )
 
     async def send_audio(self, live_session, websocket: WebSocket):
-        """Pause uplink while tool calls are being processed."""
-        while True:
+        """
+        Send audio data from the client to Gemini Live API (uplink direction).
+        This runs in a loop until the connection is closed.
+        Wait if a tool call is in progress to avoid protocol violations,
+        since Gemini expects tool calls to be atomic with no interleaving input.
+        """
+        while not self._session_closed:
             try:
-                if self._tool_call_in_progress:
-                    await asyncio.sleep(0.02)
-                    continue
+                await self._can_send_audio.wait()
                 chunk = await websocket.receive_bytes()
-                msg = {"data": chunk, "mime_type": "audio/pcm"}
+                msg = {"data": chunk, "mime_type": "audio/pcm;rate=16000"}
                 async with self._live_send_lock:
+                    if self._session_closed:
+                        break
+                    if not self._can_send_audio.is_set():
+                        continue
                     await live_session.send_realtime_input(audio=msg)
             except Exception as e:
+                self._mark_session_closed()
                 print(f"Error sending audio: {e}")
                 break
 

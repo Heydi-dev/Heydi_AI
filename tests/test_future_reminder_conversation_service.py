@@ -19,6 +19,9 @@ class DummyLiveSession:
         self.sent = []
         self.tool_responses = []
 
+    async def send_realtime_input(self, **kwargs):
+        self.sent.append(kwargs)
+
     async def send_client_content(self, **kwargs):
         self.sent.append(kwargs)
 
@@ -43,9 +46,7 @@ async def test_send_start_prompt_calls_live_session():
 
     assert session.sent, "Expected a start prompt to be sent."
     payload = session.sent[0]
-    assert payload["turns"][0]["parts"][0]["text"].startswith(
-        "Start the conversation now"
-    )
+    assert payload["text"].startswith("Start the conversation now")
 
 
 def test_build_system_instruction_includes_context():
@@ -140,4 +141,32 @@ async def test_handle_tool_call_sends_function_response():
 
     await service._handle_tool_call(tool_call, session, user_id=1)
 
+    assert session.tool_responses, "Expected tool responses to be sent."
+
+
+@pytest.mark.asyncio
+async def test_handle_tool_call_pauses_audio_until_tool_response():
+    service = FutureReminderConversationService()
+    session = DummyLiveSession()
+    observed_gate_states = []
+
+    async def execute_tool_call(name, args, user_id):
+        observed_gate_states.append(service._can_send_audio.is_set())
+        return {"events": []}
+
+    service._execute_tool_call = execute_tool_call
+    tool_call = SimpleNamespace(
+        function_calls=[
+            SimpleNamespace(
+                name="fetch_recent_special_events",
+                id="call-1",
+                args={"limit": 1},
+            )
+        ]
+    )
+
+    await service._handle_tool_call(tool_call, session, user_id=1)
+
+    assert observed_gate_states == [False]
+    assert service._can_send_audio.is_set()
     assert session.tool_responses, "Expected tool responses to be sent."
